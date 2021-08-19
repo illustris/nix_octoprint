@@ -3,6 +3,45 @@
 
 	imports = [ secrets/networking.nix ];
 
+	boot = {
+		# make the camera available as v4l device
+		kernelModules = [ "bcm2835-v4l2" ];
+		extraModprobeConfig = ''
+			options uvcvideo nodrop=1 timeout=6000
+		'';
+		loader = {
+			raspberryPi = {
+				enable = true;
+				version = 3;
+				uboot.enable = true;
+			};
+			grub.enable = false;
+			generic-extlinux-compatible.enable = true;
+		};
+	};
+
+	environment = {
+		etc.nixpkgs.source = (import ./nix/sources.nix).nixpkgs;
+		systemPackages = with pkgs; [
+			htop
+			tmux
+		];
+	};
+
+	fileSystems."/" = {
+		device = "/dev/disk/by-label/NIXOS_SD";
+		fsType = "ext4";
+	};
+
+	hardware.enableRedistributableFirmware = true;
+	hardware.firmware = [ pkgs.wireless-regdb ];
+
+	networking = {
+		hostName = "ender";
+		# TODO: add to module
+		firewall.allowedTCPPorts = [ 80 ];
+	};
+
 	nixpkgs.overlays = [
 		(self: super: {
 			# https://nixos.wiki/wiki/NixOS_on_ARM/Raspberry_Pi_3
@@ -19,33 +58,60 @@
 		})
 	];
 
-	boot.loader = {
-		raspberryPi = {
-			enable = true;
-			version = 3;
-			uboot.enable = true;
-		};
-		grub.enable = false;
-		generic-extlinux-compatible.enable = true;
-	};
-
-	time.timeZone = "Asia/Kolkata";
-
-	security.sudo.wheelNeedsPassword = false;
-
-	users.users = {
-		illustris = {
-			isNormalUser = true;
-			extraGroups = [ "wheel" ];
-			openssh.authorizedKeys.keyFiles = [ ./secrets/ssh_pubkeys ];
-		};
-		root.openssh.authorizedKeys.keyFiles = [ ./secrets/ssh_pubkeys ];
-		# TODO: add to octoprint module
-		octoprint.extraGroups = [ "dialout" ];
-	};
+	# TODO: pin nixpkgs with niv
+	#programs.bash.shellAliases = {
+	#	nt = "nix-shell /etc/nixos/shell.nix --run \"sudo nixos-rebuild test\"";
+	#	ns = "nix-shell /etc/nixos/shell.nix --run \"sudo nixos-rebuild switch\"";
+	#};
 
 	services = {
-		openssh.enable = true;
+		klipper = {
+			enable = true;
+			octoprintIntegration = true;
+		};
+		# expose webcanm and octoprint on 80
+		haproxy = {
+			enable = true;
+			config = ''global
+        maxconn 4096
+        user haproxy
+        group haproxy
+        daemon
+        log 127.0.0.1 local0 debug
+
+defaults
+        log     global
+        mode    http
+        option  httplog
+        option  dontlognull
+        retries 3
+        option redispatch
+        option http-server-close
+        option forwardfor
+        maxconn 2000
+        timeout connect 5s
+        timeout client  15m
+        timeout server  15m
+
+frontend public
+        bind *:80
+        use_backend webcam if { path_beg /webcam/ }
+        default_backend octoprint
+
+backend octoprint
+        option forwardfor
+        server octoprint1 127.0.0.1:5000
+
+backend webcam
+	http-request replace-path /webcam/(.*) /\1
+        server webcam1  127.0.0.1:5050
+'';
+		};
+		# expose webcam over HTTP, listens on port 5050
+		mjpg-streamer = {
+			enable = true;
+			inputPlugin = "input_uvc.so";
+		};
 		octoprint = {
 			enable = true;
 			plugins = let
@@ -63,21 +129,24 @@
 						sha256 = "03bc2zbffw4ksk8if90kxhs3179nbhb4xikp4f0adm3lrnvxkd3s";
 					};
 				};
-				in plugins: with plugins; [ themeify stlviewer ender3v2tempfix ender3v2tempfix ];
+				in plugins: with plugins; [
+					ender3v2tempfix
+					themeify
+					stlviewer
+					#abl-expert
+					#bedlevelvisualizer
+					#costestimation
+					#gcodeeditor
+					telegram
+					touchui
+					#octoklipper
+					octoprint-dashboard
+				 ];
 		};
-		klipper = {
-			enable = true;
-			octoprintIntegration = true;
-		};
+		openssh.enable = true;
 	};
 
-	fileSystems."/" = {
-		device = "/dev/disk/by-label/NIXOS_SD";
-		fsType = "ext4";
-	};
-
-	hardware.enableRedistributableFirmware = true;
-	hardware.firmware = [ pkgs.wireless-regdb ];
+	security.sudo.wheelNeedsPassword = false;
 
 	# Pi 3 has very little RAM, needs swap for nixos-rebuild
 	swapDevices = [
@@ -87,15 +156,17 @@
 		}
 	];
 
-	environment = {
-		systemPackages = with pkgs; [
-			htop tmux
-		];
+	time.timeZone = "Asia/Kolkata";
+
+	users.users = {
+		illustris = {
+			isNormalUser = true;
+			extraGroups = [ "wheel" ];
+			openssh.authorizedKeys.keyFiles = [ ./secrets/ssh_pubkeys ];
+		};
+		root.openssh.authorizedKeys.keyFiles = [ ./secrets/ssh_pubkeys ];
+		# TODO: add to octoprint module
+		octoprint.extraGroups = [ "dialout" ];
 	};
 
-	networking = {
-		hostName = "ender";
-		# TODO: add to module
-		firewall.allowedTCPPorts = [ 5000 ];
-	};
 }
